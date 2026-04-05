@@ -29,6 +29,15 @@ export interface SyncProgress {
   done: boolean;
 }
 
+export interface LinkedinSyncState {
+  provider: "linkedin";
+  lastRunAt?: string;
+  totalRuns: number;
+  totalAdded: number;
+  lastAdded: number;
+  lastSeenIds: string[];
+}
+
 export interface ExtractedBookmarkCandidate {
   url: string;
   text: string;

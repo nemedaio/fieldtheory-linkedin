@@ -6,7 +6,7 @@ import {
   formatSearchResults,
   getBookmarkById,
   getStats,
-  listBookmarks,
+  listBookmarksWithFilters,
   searchBookmarks,
 } from "./bookmarks-db.js";
 import { formatBookmarkStatus, getBookmarkStatusView } from "./bookmarks-service.js";
@@ -66,7 +66,7 @@ export function buildCli(): Command {
   program
     .name("ftli")
     .description("Sync and search your LinkedIn saved posts locally.")
-    .version("0.1.0")
+    .version("0.1.1")
     .showHelpAfterError()
     .hook("preAction", () => {
       console.log(LOGO);
@@ -76,6 +76,7 @@ export function buildCli(): Command {
     .command("sync")
     .description("Open LinkedIn, scrape your saved posts, and refresh the local index")
     .option("--headless", "Run browser automation headlessly", false)
+    .option("--full", "Force a deeper crawl instead of incremental stop heuristics", false)
     .option("--profile-dir <path>", "Browser profile directory to persist login")
     .option("--saved-posts-url <url>", "Override the LinkedIn saved posts page URL")
     .option("--max-rounds <n>", "Maximum scroll rounds", (value: string) => Number(value), 50)
@@ -96,6 +97,7 @@ export function buildCli(): Command {
 
         const result = await syncLinkedinBookmarks({
           headless: Boolean(options.headless),
+          full: Boolean(options.full),
           profileDir: options.profileDir ? String(options.profileDir) : undefined,
           savedPostsUrl: options.savedPostsUrl ? String(options.savedPostsUrl) : undefined,
           maxRounds: Number(options.maxRounds) || 50,
@@ -134,6 +136,8 @@ export function buildCli(): Command {
     .description("Full-text search across saved LinkedIn posts")
     .argument("<query>", "FTS query")
     .option("--author <slug>", "Filter by LinkedIn author slug")
+    .option("--after <date>", "Filter to items on or after YYYY-MM-DD")
+    .option("--before <date>", "Filter to items on or before YYYY-MM-DD")
     .option("--limit <n>", "Max results", (value: string) => Number(value), 20)
     .action(
       safe(async (query: string, options) => {
@@ -143,6 +147,8 @@ export function buildCli(): Command {
         const results = await searchBookmarks({
           query,
           author: options.author ? String(options.author) : undefined,
+          after: options.after ? String(options.after) : undefined,
+          before: options.before ? String(options.before) : undefined,
           limit: Number(options.limit) || 20,
         });
         console.log(formatSearchResults(results));
@@ -152,6 +158,10 @@ export function buildCli(): Command {
   program
     .command("list")
     .description("List recent saved posts")
+    .option("--query <query>", "Optional FTS query")
+    .option("--author <slug>", "Filter by LinkedIn author slug")
+    .option("--after <date>", "Filter to items on or after YYYY-MM-DD")
+    .option("--before <date>", "Filter to items on or before YYYY-MM-DD")
     .option("--limit <n>", "Max results", (value: string) => Number(value), 30)
     .option("--offset <n>", "Offset", (value: string) => Number(value), 0)
     .option("--json", "JSON output", false)
@@ -160,7 +170,14 @@ export function buildCli(): Command {
         if (!requireIndex()) {
           return;
         }
-        const items = await listBookmarks(Number(options.limit) || 30, Number(options.offset) || 0);
+        const items = await listBookmarksWithFilters({
+          query: options.query ? String(options.query) : undefined,
+          author: options.author ? String(options.author) : undefined,
+          after: options.after ? String(options.after) : undefined,
+          before: options.before ? String(options.before) : undefined,
+          limit: Number(options.limit) || 30,
+          offset: Number(options.offset) || 0,
+        });
         if (options.json) {
           console.log(JSON.stringify(items, null, 2));
           return;
@@ -220,6 +237,18 @@ export function buildCli(): Command {
         console.log(
           `Date range: ${stats.dateRange.earliest?.slice(0, 10) ?? "?"} to ${stats.dateRange.latest?.slice(0, 10) ?? "?"}`,
         );
+        if (stats.topAuthors.length > 0) {
+          console.log("\nTop authors:");
+          for (const author of stats.topAuthors) {
+            console.log(`  ${author.author}: ${author.count}`);
+          }
+        }
+        if (stats.kindBreakdown.length > 0) {
+          console.log("\nKinds:");
+          for (const kind of stats.kindBreakdown) {
+            console.log(`  ${kind.kind}: ${kind.count}`);
+          }
+        }
       }),
     );
 

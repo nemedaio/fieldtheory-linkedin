@@ -9,6 +9,8 @@ const SCHEMA_VERSION = 1;
 export interface SearchOptions {
   query: string;
   author?: string;
+  after?: string;
+  before?: string;
   limit?: number;
 }
 
@@ -26,6 +28,23 @@ export interface BookmarkListItem extends SearchResult {
   bookmarkedAt?: string | null;
   kind: string;
   links: string[];
+}
+
+export interface BookmarkListOptions {
+  query?: string;
+  author?: string;
+  after?: string;
+  before?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface StatsView {
+  totalBookmarks: number;
+  uniqueAuthors: number;
+  dateRange: { earliest: string | null; latest: string | null };
+  topAuthors: Array<{ author: string; count: number }>;
+  kindBreakdown: Array<{ kind: string; count: number }>;
 }
 
 function initSchema(db: Database): void {
@@ -139,6 +158,14 @@ export async function searchBookmarks(options: SearchOptions): Promise<SearchRes
       filters.push(`b.author_slug = ? COLLATE NOCASE`);
       params.push(options.author);
     }
+    if (options.after) {
+      filters.push(`COALESCE(b.bookmarked_at, b.posted_at, b.synced_at) >= ?`);
+      params.push(options.after);
+    }
+    if (options.before) {
+      filters.push(`COALESCE(b.bookmarked_at, b.posted_at, b.synced_at) <= ?`);
+      params.push(options.before);
+    }
 
     params.push(limit);
 
@@ -174,9 +201,37 @@ export async function searchBookmarks(options: SearchOptions): Promise<SearchRes
 }
 
 export async function listBookmarks(limit = 30, offset = 0): Promise<BookmarkListItem[]> {
+  return listBookmarksWithFilters({ limit, offset });
+}
+
+export async function listBookmarksWithFilters(options: BookmarkListOptions = {}): Promise<BookmarkListItem[]> {
   const db = await openDb(bookmarksIndexPath());
+  const limit = options.limit ?? 30;
+  const offset = options.offset ?? 0;
 
   try {
+    const filters: string[] = [];
+    const params: Array<string | number> = [];
+
+    if (options.query) {
+      filters.push(`b.rowid IN (SELECT rowid FROM bookmarks_fts WHERE bookmarks_fts MATCH ?)`);
+      params.push(options.query);
+    }
+    if (options.author) {
+      filters.push(`b.author_slug = ? COLLATE NOCASE`);
+      params.push(options.author);
+    }
+    if (options.after) {
+      filters.push(`COALESCE(b.bookmarked_at, b.posted_at, b.synced_at) >= ?`);
+      params.push(options.after);
+    }
+    if (options.before) {
+      filters.push(`COALESCE(b.bookmarked_at, b.posted_at, b.synced_at) <= ?`);
+      params.push(options.before);
+    }
+
+    params.push(limit, offset);
+
     const rows = db.exec(
       `SELECT
         id,
@@ -189,10 +244,11 @@ export async function listBookmarks(limit = 30, offset = 0): Promise<BookmarkLis
         kind,
         links_json
       FROM bookmarks
+      ${filters.length ? `WHERE ${filters.join(" AND ")}` : ""}
       ORDER BY COALESCE(bookmarked_at, posted_at, synced_at) DESC
       LIMIT ?
       OFFSET ?`,
-      [limit, offset],
+      params,
     );
 
     return (rows[0]?.values ?? []).map((row) => ({
@@ -255,11 +311,7 @@ export async function getBookmarkById(id: string): Promise<BookmarkListItem | nu
   }
 }
 
-export async function getStats(): Promise<{
-  totalBookmarks: number;
-  uniqueAuthors: number;
-  dateRange: { earliest: string | null; latest: string | null };
-}> {
+export async function getStats(): Promise<StatsView> {
   const db = await openDb(bookmarksIndexPath());
 
   try {
@@ -268,6 +320,19 @@ export async function getStats(): Promise<{
       db.exec(`SELECT COUNT(DISTINCT author_slug) FROM bookmarks WHERE author_slug IS NOT NULL`)[0]?.values[0]?.[0] ?? 0,
     );
     const range = db.exec(`SELECT MIN(posted_at), MAX(posted_at) FROM bookmarks WHERE posted_at IS NOT NULL`)[0]?.values?.[0] ?? [];
+    const topAuthorsRows = db.exec(
+      `SELECT COALESCE(author_slug, author_name, 'unknown') AS author, COUNT(*) AS count
+       FROM bookmarks
+       GROUP BY author
+       ORDER BY count DESC
+       LIMIT 10`,
+    );
+    const kindRows = db.exec(
+      `SELECT kind, COUNT(*) AS count
+       FROM bookmarks
+       GROUP BY kind
+       ORDER BY count DESC`,
+    );
 
     return {
       totalBookmarks,
@@ -276,6 +341,14 @@ export async function getStats(): Promise<{
         earliest: (range[0] as string) ?? null,
         latest: (range[1] as string) ?? null,
       },
+      topAuthors: (topAuthorsRows[0]?.values ?? []).map((row) => ({
+        author: String(row[0]),
+        count: Number(row[1]),
+      })),
+      kindBreakdown: (kindRows[0]?.values ?? []).map((row) => ({
+        kind: String(row[0] ?? "unknown"),
+        count: Number(row[1]),
+      })),
     };
   } finally {
     db.close();

@@ -19,7 +19,7 @@ npm install
 npm run build
 
 # first sync
-node dist/cli.js sync
+node dist/src/cli.js sync
 
 # or once published globally
 ftli sync
@@ -29,11 +29,12 @@ ftli search "agentic workflow"
 ## Commands
 
 - `ftli sync` sync LinkedIn saved posts and rebuild the index
+- `ftli sync --full` force a deeper crawl instead of stopping once you are caught up
 - `ftli index` rebuild the SQLite search index from `bookmarks.jsonl`
-- `ftli search <query>` full-text search across saved posts
-- `ftli list` list recent saved posts
+- `ftli search <query>` full-text search across saved posts, with author/date filters
+- `ftli list` list recent saved posts, with optional query and date filters
 - `ftli show <id>` show one saved post in detail
-- `ftli stats` show total counts and date range
+- `ftli stats` show total counts, top authors, and content kinds
 - `ftli status` show sync status and data location
 - `ftli path` print the data directory
 

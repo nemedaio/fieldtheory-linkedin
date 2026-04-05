@@ -26,6 +26,10 @@ export function bookmarksIndexPath(): string {
   return path.join(dataDir(), "bookmarks.db");
 }
 
+export function bookmarksSyncStatePath(): string {
+  return path.join(dataDir(), "bookmarks-sync-state.json");
+}
+
 export function browserProfileDir(): string {
   return path.join(dataDir(), "browser-profile");
 }

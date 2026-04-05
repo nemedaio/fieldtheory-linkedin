@@ -4,12 +4,13 @@ import { stdin as input, stdout as output } from "node:process";
 import fs from "node:fs";
 import path from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
-import { readJsonLines, writeJson, writeJsonLines } from "./fs.js";
-import { bookmarksCachePath, bookmarksMetaPath, browserProfileDir, ensureDataDir } from "./paths.js";
+import { readJson, readJsonLines, writeJson, writeJsonLines } from "./fs.js";
+import { bookmarksCachePath, bookmarksMetaPath, bookmarksSyncStatePath, browserProfileDir, ensureDataDir } from "./paths.js";
 import type {
   ExtractedBookmarkCandidate,
   LinkedinBookmarkMeta,
   LinkedinBookmarkRecord,
+  LinkedinSyncState,
   SyncProgress,
 } from "./types.js";
 
@@ -20,6 +21,7 @@ export interface SyncLinkedinBookmarksOptions {
   profileDir?: string;
   maxRounds?: number;
   delayMs?: number;
+  full?: boolean;
   savedPostsUrl?: string;
   onProgress?: (progress: SyncProgress) => void;
 }
@@ -71,6 +73,14 @@ function toBookmarkRecord(candidate: ExtractedBookmarkCandidate, syncedAt: strin
     syncedAt,
     provider: "linkedin",
   };
+}
+
+async function readSyncState(): Promise<LinkedinSyncState | null> {
+  try {
+    return await readJson<LinkedinSyncState>(bookmarksSyncStatePath());
+  } catch {
+    return null;
+  }
 }
 
 function findChromeExecutable(): string | undefined {
@@ -256,11 +266,13 @@ export async function syncLinkedinBookmarks(
   const savedPostsUrl = options.savedPostsUrl || process.env.FTLI_SAVED_POSTS_URL || DEFAULT_SAVED_POSTS_URL;
   const profileDir = options.profileDir || browserProfileDir();
   const headless = options.headless ?? false;
+  const full = options.full ?? false;
   const maxRounds = options.maxRounds ?? 50;
   const delayMs = options.delayMs ?? 1500;
 
   const existing = await readJsonLines<LinkedinBookmarkRecord>(bookmarksCachePath());
   const existingById = new Map(existing.map((record) => [record.id, record]));
+  const priorState = await readSyncState();
 
   const context = await openLinkedinContext(profileDir, headless);
 
@@ -271,18 +283,30 @@ export async function syncLinkedinBookmarks(
     const discovered = new Map<string, LinkedinBookmarkRecord>();
     let stableRounds = 0;
     let previousCount = 0;
+    let executedRounds = 0;
+    let stopReason = "stabilized";
+    let lastVisibleIds: string[] = [];
 
     for (let round = 1; round <= maxRounds; round += 1) {
+      executedRounds = round;
       const syncedAt = new Date().toISOString();
       const candidates = await scrapeVisibleCandidates(page);
+      const visibleIds: string[] = [];
+      let roundNewCount = 0;
 
       for (const candidate of candidates) {
         const record = toBookmarkRecord(candidate, syncedAt);
         if (record.text.length < 20) {
           continue;
         }
+        visibleIds.push(record.id);
+        if (!existingById.has(record.id) && !discovered.has(record.id)) {
+          roundNewCount += 1;
+        }
         discovered.set(record.id, record);
       }
+
+      lastVisibleIds = visibleIds.slice(0, 20);
 
       const newAdded = [...discovered.keys()].filter((id) => !existingById.has(id)).length;
       options.onProgress?.({
@@ -299,6 +323,24 @@ export async function syncLinkedinBookmarks(
       }
 
       if (stableRounds >= 2) {
+        stopReason = "stabilized";
+        break;
+      }
+
+      const overlapWithPreviousSync =
+        priorState?.lastSeenIds.filter((id) => visibleIds.includes(id)).length ?? 0;
+      const visibleKnownCount = visibleIds.filter((id) => existingById.has(id)).length;
+      const hasPreviousSyncWindow = (priorState?.lastSeenIds.length ?? 0) > 0;
+
+      if (
+        !full &&
+        round >= 2 &&
+        roundNewCount === 0 &&
+        visibleIds.length > 0 &&
+        ((hasPreviousSyncWindow && overlapWithPreviousSync >= Math.min(priorState?.lastSeenIds.length ?? 0, 5)) ||
+          visibleKnownCount === visibleIds.length)
+      ) {
+        stopReason = "caught up to previously synced bookmarks";
         break;
       }
 
@@ -331,8 +373,18 @@ export async function syncLinkedinBookmarks(
     await writeJson(bookmarksMetaPath(), meta);
 
     const added = merged.length - existing.length;
+    const syncState: LinkedinSyncState = {
+      provider: "linkedin",
+      lastRunAt: new Date().toISOString(),
+      totalRuns: (priorState?.totalRuns ?? 0) + 1,
+      totalAdded: (priorState?.totalAdded ?? 0) + added,
+      lastAdded: added,
+      lastSeenIds: lastVisibleIds,
+    };
+    await writeJson(bookmarksSyncStatePath(), syncState);
+
     options.onProgress?.({
-      rounds: maxRounds,
+      rounds: executedRounds,
       scraped: discovered.size,
       newAdded: added,
       done: true,
@@ -341,7 +393,7 @@ export async function syncLinkedinBookmarks(
     return {
       added,
       totalBookmarks: merged.length,
-      cachePath: path.dirname(bookmarksCachePath()),
+      cachePath: `${path.dirname(bookmarksCachePath())} (${stopReason})`,
     };
   } finally {
     await context.close();
