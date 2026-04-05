@@ -31,6 +31,18 @@
     "playwright"
   ],
   "license": "MIT",
+  "author": "Xavier Herce",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nemedaio/fieldtheory-linkedin.git"
+  },
+  "homepage": "https://github.com/nemedaio/fieldtheory-linkedin#readme",
+  "bugs": {
+    "url": "https://github.com/nemedaio/fieldtheory-linkedin/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "commander": "^14.0.3",
     "playwright-core": "^1.54.2",
