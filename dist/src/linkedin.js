@@ -180,25 +180,47 @@ async function scrapeVisibleCandidates(page) {
     });
 }
 async function advanceSavedPostsFeed(page) {
-    await page.evaluate(() => {
-        const clickLoadMore = () => {
-            const buttons = Array.from(document.querySelectorAll("button"));
-            const button = buttons.find((candidate) => /show more|load more|see more/i.test(candidate.innerText));
-            button?.click();
-        };
-        clickLoadMore();
-        const candidates = [
-            document.scrollingElement,
-            ...Array.from(document.querySelectorAll("main, div, section")),
-        ].filter((element) => Boolean(element));
-        const scrollable = candidates
-            .filter((element) => element.scrollHeight > element.clientHeight + 200)
-            .sort((left, right) => right.scrollHeight - left.scrollHeight)[0];
-        if (scrollable) {
-            scrollable.scrollTop = scrollable.scrollHeight;
+    // Count post anchors before scrolling so we can detect new content
+    const anchorCountBefore = await page.evaluate(() => document.querySelectorAll('a[href*="/feed/update/"], a[href*="/posts/"], a[href*="/pulse/"]').length);
+    // Click any "Show more results" / "Load more" button first
+    const clicked = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll("button"));
+        const button = buttons.find((candidate) => /show more|load more|see more|show more results/i.test(candidate.innerText));
+        if (button) {
+            button.scrollIntoView({ behavior: "smooth", block: "center" });
+            button.click();
+            return true;
         }
-        window.scrollTo(0, document.body.scrollHeight);
+        return false;
     });
+    if (clicked) {
+        // Wait for network activity from button click to settle
+        await page.waitForLoadState("networkidle").catch(() => { });
+        await page.waitForTimeout(1000);
+    }
+    // Scroll incrementally to trigger LinkedIn's lazy-load observers.
+    // A single jump to the bottom often misses the intersection-observer
+    // thresholds that LinkedIn uses to trigger loading more content.
+    const scrollSteps = 3;
+    for (let step = 1; step <= scrollSteps; step += 1) {
+        await page.evaluate((fraction) => {
+            const target = Math.floor(document.body.scrollHeight * fraction);
+            window.scrollTo({ top: target, behavior: "smooth" });
+        }, step / scrollSteps);
+        await page.waitForTimeout(400);
+    }
+    // After reaching the bottom, wait for LinkedIn to respond with new content.
+    // We use two strategies: wait for network idle, and poll for new DOM elements.
+    await page.waitForLoadState("networkidle").catch(() => { });
+    // Poll briefly for new post anchors to appear (up to 3 seconds)
+    const pollDeadline = Date.now() + 3000;
+    while (Date.now() < pollDeadline) {
+        const anchorCountAfter = await page.evaluate(() => document.querySelectorAll('a[href*="/feed/update/"], a[href*="/posts/"], a[href*="/pulse/"]').length);
+        if (anchorCountAfter > anchorCountBefore) {
+            break;
+        }
+        await page.waitForTimeout(300);
+    }
 }
 export async function syncLinkedinBookmarks(options = {}) {
     ensureDataDir();
@@ -206,12 +228,15 @@ export async function syncLinkedinBookmarks(options = {}) {
     const profileDir = options.profileDir || browserProfileDir();
     const headless = options.headless ?? false;
     const full = options.full ?? false;
-    const maxRounds = options.maxRounds ?? 50;
-    const delayMs = options.delayMs ?? 1500;
-    const existing = await readJsonLines(bookmarksCachePath());
+    const maxRounds = options.maxRounds ?? 1000;
+    const delayMs = options.delayMs ?? 800;
+    const maxMinutes = options.maxMinutes ?? 45;
+    const checkpointEvery = options.checkpointEvery ?? 25;
+    let existing = await readJsonLines(bookmarksCachePath());
     const existingById = new Map(existing.map((record) => [record.id, record]));
     const priorState = await readSyncState();
     const context = await openLinkedinContext(profileDir, headless);
+    const started = Date.now();
     try {
         const page = context.pages()[0] ?? (await context.newPage());
         await ensureReadyForScrape(page, savedPostsUrl);
@@ -222,6 +247,11 @@ export async function syncLinkedinBookmarks(options = {}) {
         let stopReason = "stabilized";
         let lastVisibleIds = [];
         for (let round = 1; round <= maxRounds; round += 1) {
+            // Safety: enforce max runtime
+            if (Date.now() - started > maxMinutes * 60_000) {
+                stopReason = "max runtime reached";
+                break;
+            }
             executedRounds = round;
             const syncedAt = new Date().toISOString();
             const candidates = await scrapeVisibleCandidates(page);
@@ -252,7 +282,7 @@ export async function syncLinkedinBookmarks(options = {}) {
             else {
                 stableRounds = 0;
             }
-            if (stableRounds >= 2) {
+            if (stableRounds >= 4) {
                 stopReason = "stabilized";
                 break;
             }
@@ -267,6 +297,16 @@ export async function syncLinkedinBookmarks(options = {}) {
                     visibleKnownCount === visibleIds.length)) {
                 stopReason = "caught up to previously synced bookmarks";
                 break;
+            }
+            // Checkpoint to disk periodically so progress isn't lost on crash
+            if (round % checkpointEvery === 0) {
+                const checkpoint = [...existing];
+                for (const record of discovered.values()) {
+                    if (!existingById.has(record.id)) {
+                        checkpoint.push(record);
+                    }
+                }
+                await writeJsonLines(bookmarksCachePath(), checkpoint);
             }
             previousCount = discovered.size;
             await advanceSavedPostsFeed(page);

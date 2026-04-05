@@ -66,8 +66,9 @@ export function buildCli() {
         .option("--full", "Force a deeper crawl instead of incremental stop heuristics", false)
         .option("--profile-dir <path>", "Browser profile directory to persist login")
         .option("--saved-posts-url <url>", "Override the LinkedIn saved posts page URL")
-        .option("--max-rounds <n>", "Maximum scroll rounds", (value) => Number(value), 50)
-        .option("--delay-ms <n>", "Delay between scroll rounds", (value) => Number(value), 1500)
+        .option("--max-rounds <n>", "Maximum scroll rounds", (value) => Number(value), 1000)
+        .option("--delay-ms <n>", "Delay between scroll rounds in ms", (value) => Number(value), 800)
+        .option("--max-minutes <n>", "Maximum runtime in minutes", (value) => Number(value), 45)
         .action(safe(async (options) => {
         const firstRun = isFirstRun();
         ensureDataDir();
@@ -84,8 +85,9 @@ export function buildCli() {
             full: Boolean(options.full),
             profileDir: options.profileDir ? String(options.profileDir) : undefined,
             savedPostsUrl: options.savedPostsUrl ? String(options.savedPostsUrl) : undefined,
-            maxRounds: Number(options.maxRounds) || 50,
-            delayMs: Number(options.delayMs) || 1500,
+            maxRounds: Number(options.maxRounds) || 1000,
+            delayMs: Number(options.delayMs) || 800,
+            maxMinutes: Number(options.maxMinutes) || 45,
             onProgress: (progress) => {
                 const line = `  round ${progress.rounds} | scraped ${progress.scraped} | new ${progress.newAdded}`;
                 process.stderr.write(`\r\x1b[K${line}`);
