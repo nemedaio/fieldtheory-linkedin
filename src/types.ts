@@ -1,3 +1,12 @@
+export type BookmarkCategory =
+  | "tool"
+  | "security"
+  | "technique"
+  | "launch"
+  | "research"
+  | "opinion"
+  | "commerce";
+
 export interface LinkedinBookmarkRecord {
   id: string;
   postUrl: string;
@@ -13,6 +22,10 @@ export interface LinkedinBookmarkRecord {
   links: string[];
   syncedAt: string;
   provider: "linkedin";
+  categories?: string[];
+  primaryCategory?: string;
+  domains?: string[];
+  primaryDomain?: string;
 }
 
 export interface LinkedinBookmarkMeta {

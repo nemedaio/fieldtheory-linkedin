@@ -4,7 +4,7 @@ import { readJsonLines } from "./fs.js";
 import { bookmarksCachePath, bookmarksIndexPath } from "./paths.js";
 import type { LinkedinBookmarkRecord } from "./types.js";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 export interface SearchOptions {
   query: string;
@@ -47,6 +47,27 @@ export interface StatsView {
   kindBreakdown: Array<{ kind: string; count: number }>;
 }
 
+function getSchemaVersion(db: Database): number {
+  try {
+    const rows = db.exec(`SELECT value FROM meta WHERE key = 'schema_version'`);
+    return Number(rows[0]?.values?.[0]?.[0] ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+function migrateSchema(db: Database): void {
+  const version = getSchemaVersion(db);
+  if (version < 2) {
+    // Add classification columns (safe to run even if columns don't exist yet on fresh DBs)
+    for (const col of ["categories TEXT", "primary_category TEXT", "domains TEXT", "primary_domain TEXT"]) {
+      try {
+        db.run(`ALTER TABLE bookmarks ADD COLUMN ${col}`);
+      } catch { /* column may already exist */ }
+    }
+  }
+}
+
 function initSchema(db: Database): void {
   db.run(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`);
   db.run(`CREATE TABLE IF NOT EXISTS bookmarks (
@@ -63,10 +84,16 @@ function initSchema(db: Database): void {
     kind TEXT NOT NULL,
     links_json TEXT,
     synced_at TEXT NOT NULL,
-    provider TEXT NOT NULL
+    provider TEXT NOT NULL,
+    categories TEXT,
+    primary_category TEXT,
+    domains TEXT,
+    primary_domain TEXT
   )`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_bookmarks_author_slug ON bookmarks(author_slug)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_bookmarks_posted_at ON bookmarks(posted_at)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_bookmarks_primary_category ON bookmarks(primary_category)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_bookmarks_primary_domain ON bookmarks(primary_domain)`);
   db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS bookmarks_fts USING fts5(
     text,
     author_name,
@@ -76,6 +103,7 @@ function initSchema(db: Database): void {
     content_rowid=rowid,
     tokenize='porter unicode61'
   )`);
+  migrateSchema(db);
   db.run(`REPLACE INTO meta VALUES ('schema_version', '${SCHEMA_VERSION}')`);
 }
 
@@ -93,7 +121,25 @@ function parseJsonArray(value: unknown): string[] {
 
 function insertRecord(db: Database, record: LinkedinBookmarkRecord): void {
   db.run(
-    `INSERT OR REPLACE INTO bookmarks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO bookmarks (
+      id, canonical_url, post_url, text, author_name, author_slug,
+      author_url, posted_at, bookmarked_at, saved_at_label, kind,
+      links_json, synced_at, provider
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      canonical_url = excluded.canonical_url,
+      post_url = excluded.post_url,
+      text = excluded.text,
+      author_name = excluded.author_name,
+      author_slug = excluded.author_slug,
+      author_url = excluded.author_url,
+      posted_at = excluded.posted_at,
+      bookmarked_at = excluded.bookmarked_at,
+      saved_at_label = excluded.saved_at_label,
+      kind = excluded.kind,
+      links_json = excluded.links_json,
+      synced_at = excluded.synced_at,
+      provider = excluded.provider`,
     [
       record.id,
       record.canonicalUrl,
@@ -350,6 +396,77 @@ export async function getStats(): Promise<StatsView> {
         count: Number(row[1]),
       })),
     };
+  } finally {
+    db.close();
+  }
+}
+
+export async function applyRegexClassifications(
+  classifications: Map<string, { categories: string[]; primary: string }>,
+): Promise<{ updated: number }> {
+  const dbPath = bookmarksIndexPath();
+  const db = await openDb(dbPath);
+  let updated = 0;
+
+  try {
+    initSchema(db);
+    db.run("BEGIN TRANSACTION");
+    for (const [id, result] of classifications) {
+      db.run(
+        `UPDATE bookmarks SET categories = ?, primary_category = ?
+         WHERE id = ? AND (primary_category IS NULL OR primary_category = 'unclassified')`,
+        [result.categories.join(","), result.primary, id],
+      );
+      updated += db.getRowsModified();
+    }
+    db.run("COMMIT");
+    saveDb(db, dbPath);
+    return { updated };
+  } finally {
+    db.close();
+  }
+}
+
+export async function openClassifyDb(): Promise<{ db: Database; dbPath: string }> {
+  const dbPath = bookmarksIndexPath();
+  const db = await openDb(dbPath);
+  initSchema(db);
+  return { db, dbPath };
+}
+
+export function saveClassifyDb(db: Database, dbPath: string): void {
+  saveDb(db, dbPath);
+}
+
+export async function getCategoryCounts(): Promise<Array<{ category: string; count: number }>> {
+  const db = await openDb(bookmarksIndexPath());
+  try {
+    const rows = db.exec(
+      `SELECT primary_category, COUNT(*) as c FROM bookmarks
+       WHERE primary_category IS NOT NULL
+       GROUP BY primary_category ORDER BY c DESC`,
+    );
+    return (rows[0]?.values ?? []).map((row) => ({
+      category: String(row[0]),
+      count: Number(row[1]),
+    }));
+  } finally {
+    db.close();
+  }
+}
+
+export async function getDomainCounts(): Promise<Array<{ domain: string; count: number }>> {
+  const db = await openDb(bookmarksIndexPath());
+  try {
+    const rows = db.exec(
+      `SELECT primary_domain, COUNT(*) as c FROM bookmarks
+       WHERE primary_domain IS NOT NULL
+       GROUP BY primary_domain ORDER BY c DESC`,
+    );
+    return (rows[0]?.values ?? []).map((row) => ({
+      domain: String(row[0]),
+      count: Number(row[1]),
+    }));
   } finally {
     db.close();
   }
