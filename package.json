@@ -1,0 +1,47 @@
+{
+  "name": "fieldtheory-linkedin",
+  "version": "0.1.0",
+  "description": "Local-first CLI to sync and search your LinkedIn saved posts.",
+  "type": "module",
+  "bin": {
+    "ftli": "bin/ftli.mjs"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test tests/**/*.test.ts",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/src/cli.js",
+    "prepare": "npm run build"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "linkedin",
+    "bookmarks",
+    "saved-posts",
+    "cli",
+    "sqlite",
+    "fts5",
+    "playwright"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^14.0.3",
+    "playwright-core": "^1.54.2",
+    "sql.js": "^1.14.1",
+    "sql.js-fts5": "^1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "@types/sql.js": "^1.4.11",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
